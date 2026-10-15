@@ -20,7 +20,7 @@ EXTRA_SLOTS = {"2026-10-15": (21,)}  # разовый слот: пробный �
 TEST_AFTER_UTC = datetime(2026, 10, 15, 18, 30, tzinfo=timezone.utc)
 TEST2_AFTER_UTC = datetime(2026, 10, 15, 21, 26, tzinfo=timezone.utc)  # проба загрузки через альбом (ключ слота test3)
 SLOT_WINDOW_MIN = 40  # слот считается открытым первые 40 минут часа
-SIGNATURE = "\n\n👉 Мы в Telegram: https://t.me/TheHottest_NewsEveryDay"
+SIGNATURE = ""  # во ВК никаких ссылок и подписей не ставим (решение владельца)
 
 MSK = timezone(timedelta(hours=3))
 
@@ -189,7 +189,7 @@ def run_slot(seen, is_hot, dry_run=False, force=False):
             return False
         best = with_photo[-1]
         text = to_vk_text(best[1])
-    post_id = post(text, best[2], link=f"https://t.me/{best[0]}", photo_only=(slot == "test3"))
+    post_id = post(text, best[2], link=None, photo_only=(slot == "test3"))  # без ссылок на Telegram
     seen.add(f"__vk__={slot}")
     print("опубликовано во ВК, post_id", post_id)
     return True
