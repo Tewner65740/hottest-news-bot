@@ -15,6 +15,7 @@ import requests
 API = "https://api.vk.com/method/"
 VERSION = "5.199"
 SLOTS_MSK = (9, 13, 20)  # утро, обед, вечер по Москве
+EXTRA_SLOTS = {"2026-10-15": (21,)}  # разовый слот: пробный пост сегодня в 21:00 (только на эту дату)
 SLOT_WINDOW_MIN = 40  # слот считается открытым первые 40 минут часа
 SIGNATURE = "\n\n👉 Мы в Telegram: https://t.me/TheHottest_NewsEveryDay"
 
@@ -24,7 +25,8 @@ MSK = timezone(timedelta(hours=3))
 def current_slot(now=None):
     """Ключ открытого слота («2026-10-15-13») или None."""
     now = (now or datetime.now(timezone.utc)).astimezone(MSK)
-    if now.hour in SLOTS_MSK and now.minute < SLOT_WINDOW_MIN:
+    slots = SLOTS_MSK + EXTRA_SLOTS.get(now.strftime("%Y-%m-%d"), ())
+    if now.hour in slots and now.minute < SLOT_WINDOW_MIN:
         return now.strftime("%Y-%m-%d-%H")
     return None
 
