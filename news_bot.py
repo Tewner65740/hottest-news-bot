@@ -260,6 +260,13 @@ HOT_RE = re.compile(
 MIN_GAP = 45 * 60  # обычные посты: примерно 1 в 45–60 минут, около 24 в сутки как у каналов-образцов
 
 
+FAST_CHANNELS = ("bbbreaking",)  # берём все новости оттуда сразу, там они выходят быстрее всех
+
+
+def is_fast(link):
+    return any(link.startswith(f"https://t.me/{c}/") for c in FAST_CHANNELS)
+
+
 def is_hot(*texts):
     return any(HOT_RE.search(t or "") for t in texts)
 
@@ -388,14 +395,14 @@ def main():
             print(f"! t.me/{ch}: {e}", file=sys.stderr)
 
     # горячее первым; обычные посты выходят не чаще одного за MIN_GAP, чтобы лента не лилась пачкой
-    fresh.sort(key=lambda p: not is_hot(p[1], p[2]))
+    fresh.sort(key=lambda p: not (is_hot(p[1], p[2]) or is_fast(p[0])))
     # время последнего обычного поста хранится служебной записью в seen.json (он уже есть в кэше Actions)
     last_post = max((float(s.split("=", 1)[1]) for s in seen if s.startswith("__last_post__=")), default=0.0)
     posted = 0
     for link, title, summary, img in fresh:
         if posted >= args.limit:
             break
-        hot = is_hot(title, summary)
+        hot = is_hot(title, summary) or is_fast(link)  # быстрые источники идут без паузы между постами
         if not hot and time.time() - last_post < MIN_GAP and not args.dry_run:
             break  # дальше только обычные, ждём следующего слота
         try:
