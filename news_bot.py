@@ -90,9 +90,26 @@ def is_ad(*texts):
     return any(AD_RE.search(t or "") or SKIP_RE.search(t or "") for t in texts)
 
 
+PLATFORMS_RE = re.compile(r"twitch|youtube|ютуб|kick\b|tiktok|тикток|instagram|инстаграм|вконтакте|rutube|рутуб|дзен", re.I)
+PROMO_LINE_RE = re.compile(
+    r"обсуждаем|на\s+стриме|смотрите\s+(?:на|в)\b|стрим\s|подписывайт|ставьте\s+лайк|жмите|"
+    r"наш\s+(?:канал|чат|бот)|присоединяйтесь|мы\s+в\s+(?:telegram|телеграм|max|вк)",
+    re.I,
+)
+
+
+def is_promo_line(line):
+    """Рекламная строка канала-источника: призыв на стрим/в соцсети или перечень платформ."""
+    if PROMO_LINE_RE.search(line):
+        return True
+    return len(PLATFORMS_RE.findall(line)) >= 2  # «TWITCH | YouTube | KICK | TikTok»
+
+
 def strip_branding(text):
     """Убирает строки с подписями, рекламой и упоминаниями чужих каналов."""
-    return "\n".join(l for l in text.split("\n") if not BRAND_RE.search(l)).strip()
+    return "\n".join(
+        l for l in text.split("\n") if not BRAND_RE.search(l) and not is_promo_line(l)
+    ).strip()
 
 
 FIRST_PERSON_RE = re.compile(r"^\W*(?:я|мы|мне|мой|моя|мо[ёе]|наш\w*|меня|нас)\b", re.I)
