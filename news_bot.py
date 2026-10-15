@@ -120,7 +120,7 @@ def is_placeholder(path):
         from PIL import Image
 
         im = Image.open(path).convert("L").resize((64, 64))
-        px = list(im.getdata())
+        px = list(im.tobytes())
         dark = sum(p < 20 for p in px) / len(px)
         light = sum(p > 235 for p in px) / len(px)
         return dark > 0.6 or light > 0.85
@@ -171,6 +171,25 @@ BOT_WALL_RE = re.compile(
     r"support team|enable javascript|checking your browser|ddos|включите javascript|подтвердите, что вы не робот",
     re.I,
 )
+
+
+def purge_junk():
+    """Удаляет из канала посты с мусором (страницы защиты от ботов), если такие просочились."""
+    ch = os.environ["TELEGRAM_CHANNEL"].lstrip("@")
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    try:
+        page = requests.get(f"https://t.me/s/{ch}", timeout=30, headers={"User-Agent": "Mozilla/5.0"}).text
+    except Exception as e:
+        print("! purge:", e, file=sys.stderr)
+        return
+    for block in page.split('data-post="')[1:]:
+        post = block.split('"', 1)[0]
+        m = re.search(r'class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, re.S)
+        if m and BOT_WALL_RE.search(clean(m.group(1))):
+            r = requests.post(f"https://api.telegram.org/bot{token}/deleteMessage",
+                              data={"chat_id": os.environ["TELEGRAM_CHANNEL"], "message_id": post.rsplit("/", 1)[1]},
+                              timeout=30)
+            print("удалён мусорный пост", post, r.status_code, r.text[:80])
 
 
 def is_russian(text):
@@ -382,6 +401,10 @@ def main():
         try:
             if "t.me/" not in link and len(summary) < 200:
                 summary = article_text(link) or summary
+                if len(summary) < 60 or BOT_WALL_RE.search(summary):
+                    # сайт не отдал статью (защита от ботов) или текста нет: такой пост не публикуем
+                    seen.add(link)
+                    continue
             attributed = attribute_quote(title, summary)
             if attributed is None:  # прямая речь без понятного автора не публикуем
                 seen.add(link)
@@ -425,6 +448,7 @@ def main():
 
     if not args.dry_run:
         SEEN_FILE.write_text(json.dumps(sorted(seen)), encoding="utf-8")
+        purge_junk()
     print(f"Опубликовано: {posted}" + (" (первый запуск)" if first_run else ""))
 
 
