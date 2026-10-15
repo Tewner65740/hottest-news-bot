@@ -179,7 +179,7 @@ def is_graphic(*texts):
     return any(GRAPHIC_RE.search(t or "") for t in texts)
 
 
-def send(caption, media_path, spoiler=False, chat_id=None, reply_markup=None):
+def send(caption, media_path, spoiler=False, chat_id=None, reply_markup=None, hot=False):
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     is_video = str(media_path).lower().endswith((".mp4", ".mov"))
     method, field = ("sendVideo", "video") if is_video else ("sendPhoto", "photo")
@@ -189,7 +189,8 @@ def send(caption, media_path, spoiler=False, chat_id=None, reply_markup=None):
         "caption": caption,
         "parse_mode": "HTML",
         # SILENT=1 в .env: посты без звука/уведомлений. Для обычного режима поставьте SILENT=0.
-        "disable_notification": os.environ.get("SILENT", "1") == "1" if not chat_id else False,
+        # обычные посты тихо (SILENT=1), горячие новости со звуком
+        "disable_notification": (os.environ.get("SILENT", "1") == "1" and not hot) if not chat_id else False,
     }
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
@@ -323,7 +324,7 @@ def main():
             elif str(photo).lower().endswith((".mp4", ".mov")):
                 send_draft(text, photo, graphic)  # клипы только через подтверждение админа
             else:
-                send(text, photo, spoiler=graphic)
+                send(text, photo, spoiler=graphic, hot=hot)
                 if not hot:
                     seen = {s for s in seen if not s.startswith("__last_post__=")}
                     last_post = time.time()
