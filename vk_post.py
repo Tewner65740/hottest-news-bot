@@ -18,6 +18,7 @@ SLOTS_MSK = (9, 13, 20)  # утро, обед, вечер по Москве
 EXTRA_SLOTS = {"2026-10-15": (21,)}  # разовый слот: пробный пост сегодня в 21:00 (только на эту дату)
 # разовый тест обходов загрузки фото: публикуется один раз сразу после этого времени (потом ключ test1 занят)
 TEST_AFTER_UTC = datetime(2026, 10, 15, 18, 30, tzinfo=timezone.utc)
+TEST2_AFTER_UTC = datetime(2026, 10, 15, 20, 55, tzinfo=timezone.utc)  # проба после включения сообщений
 SLOT_WINDOW_MIN = 40  # слот считается открытым первые 40 минут часа
 SIGNATURE = "\n\n👉 Мы в Telegram: https://t.me/TheHottest_NewsEveryDay"
 
@@ -27,8 +28,10 @@ MSK = timezone(timedelta(hours=3))
 def current_slot(now=None):
     """Ключ открытого слота («2026-10-15-13») или None."""
     now = now or datetime.now(timezone.utc)
-    if now >= TEST_AFTER_UTC and now < TEST_AFTER_UTC + timedelta(hours=3):  # разовый пробный слот
+    if now >= TEST_AFTER_UTC and now < TEST_AFTER_UTC + timedelta(hours=2):  # разовый пробный слот (уже использован)
         return "test1"
+    if now >= TEST2_AFTER_UTC and now < TEST2_AFTER_UTC + timedelta(hours=3):  # проба загрузки фото (только с фото)
+        return "test2"
     now = now.astimezone(MSK)
     slots = SLOTS_MSK + EXTRA_SLOTS.get(now.strftime("%Y-%m-%d"), ())
     if now.hour in slots and now.minute < SLOT_WINDOW_MIN:
@@ -119,7 +122,7 @@ def upload_via_album(token, group_id, image_bytes):
     return f"photo{saved['owner_id']}_{saved['id']}"
 
 
-def post(text, image_url=None, link=None):
+def post(text, image_url=None, link=None, photo_only=False):
     token, group_id = os.environ["VK_TOKEN"], os.environ["VK_GROUP_ID"].lstrip("-")
     owner = f"-{group_id}"
     if image_url:
@@ -151,6 +154,8 @@ def post(text, image_url=None, link=None):
                 except Exception as e:
                     print(f"! VK фото [{name}] публикация с вложением: {e}", file=sys.stderr)
     # не удалось приложить фото: прикрепляем ссылку на пост в Telegram, ВК покажет карточку с картинкой
+    if photo_only:  # проба: без приложенного фото ничего не публикуем
+        raise RuntimeError("фото ни одним способом не приложилось, пост не публикуется (проба)")
     # ссылка нужна только у постов с фото: у текстовой записи нет картинки для превью, и ВК такую ссылку отклоняет;
     # она же отклоняется, если картинка слишком мелкая (link_photo_sizing_rule): тогда публикуем просто текстом
     if image_url and link:
@@ -178,7 +183,13 @@ def run_slot(seen, is_hot, dry_run=False, force=False):
     if dry_run:
         print("[VK]", slot, "\n" + text, "\n[фото]" if best[2] else "\n[без фото]")
         return False
-    post_id = post(text, best[2], link=f"https://t.me/{best[0]}")
+    if slot == "test2":  # для пробы нужен пост с фото
+        with_photo = [p for p in posts if p[2]]
+        if not with_photo:
+            return False
+        best = with_photo[-1]
+        text = to_vk_text(best[1])
+    post_id = post(text, best[2], link=f"https://t.me/{best[0]}", photo_only=(slot == "test2"))
     seen.add(f"__vk__={slot}")
     print("опубликовано во ВК, post_id", post_id)
     return True
