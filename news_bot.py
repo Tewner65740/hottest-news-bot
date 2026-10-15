@@ -198,6 +198,18 @@ def is_graphic(*texts):
 
 def send(caption, media_path, spoiler=False, chat_id=None, reply_markup=None, hot=False):
     token = os.environ["TELEGRAM_BOT_TOKEN"]
+    if media_path is None:  # пост без картинки: обычное текстовое сообщение
+        data = {
+            "chat_id": chat_id or os.environ["TELEGRAM_CHANNEL"],
+            "text": caption,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "disable_notification": os.environ.get("SILENT_MODE", "0") == "1" and not hot and not chat_id,
+        }
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=60).raise_for_status()
+        return
     is_video = str(media_path).lower().endswith((".mp4", ".mov"))
     method, field = ("sendVideo", "video") if is_video else ("sendPhoto", "photo")
     data = {
@@ -311,9 +323,6 @@ def main():
     for link, title, summary, img in fresh:
         if posted >= args.limit:
             break
-        if not img:  # без настоящей картинки с места события не публикуем
-            seen.add(link)
-            continue
         hot = is_hot(title, summary)
         if not hot and time.time() - last_post < MIN_GAP and not args.dry_run:
             break  # дальше только обычные, ждём следующего слота
@@ -337,13 +346,11 @@ def main():
             graphic = is_graphic(title, summary)
             if graphic:
                 text = "⚠️ <b>Не для слабонервных</b>\n\n" + text
-            text = text[: 1024 - len(SIGNATURE)] + SIGNATURE
-            image_path = BASE / "card_tmp.png"
+            # картинка только настоящая; нет хорошего фото: публикуем просто текстом
             photo = download(img, BASE / "photo_tmp.jpg") if img else None
-            if not photo:
-                photo = news_card(head.strip(), image_path)
+            text = text[: (1024 if photo else 4096) - len(SIGNATURE)] + SIGNATURE
             if args.dry_run:
-                print(text, "\n[фото из новости]" if img else "\n[своя карточка]", "\n---")
+                print(text, "\n[фото из новости]" if photo else "\n[только текст]", "\n---")
             elif str(photo).lower().endswith((".mp4", ".mov")):
                 send_draft(text, photo, graphic)  # клипы только через подтверждение админа
             else:

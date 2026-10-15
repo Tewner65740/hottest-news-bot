@@ -33,8 +33,7 @@ SUGGEST_KB = lambda sid: json.dumps({"inline_keyboard": [
 def post_media(chat_id, kind, file_id, caption, spoiler=False, markup=None, title="", image=None):
     """Отправка по file_id: kind = photo | video | text (текст: фото города или наша карточка)."""
     if kind == "text":
-        path = image if image and os.path.exists(image) else \
-            nb.news_card(title[:140] or "Новость от читателя", nb.BASE / "card_tmp.png")
+        path = image if image and os.path.exists(image) else None  # нет фото: просто текст
         nb.send(caption, path, spoiler, chat_id=chat_id if chat_id != "channel" else None,
                 reply_markup=json.loads(markup) if markup else None)
         return
