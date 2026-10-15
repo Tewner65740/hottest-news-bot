@@ -95,11 +95,29 @@ def strip_branding(text):
     return "\n".join(l for l in text.split("\n") if not BRAND_RE.search(l)).strip()
 
 
+def is_placeholder(path):
+    """Заглушка с логотипом сайта: почти целиком чёрная или однотонная картинка."""
+    try:
+        from PIL import Image
+
+        im = Image.open(path).convert("L").resize((64, 64))
+        px = list(im.getdata())
+        dark = sum(p < 20 for p in px) / len(px)
+        light = sum(p > 235 for p in px) / len(px)
+        return dark > 0.6 or light > 0.85
+    except Exception:
+        return False
+
+
 def download(url, path):
+    if "lenta_og" in url or "/assets/" in url:  # служебная картинка сайта, не фото новости
+        return None
     try:
         r = requests.get(url, timeout=30)
         r.raise_for_status()
         path.write_bytes(r.content)
+        if is_placeholder(path):
+            return None
         return path
     except Exception:
         return None
