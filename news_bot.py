@@ -166,14 +166,30 @@ def tg_posts(channel):
     return out[-10:]
 
 
+BOT_WALL_RE = re.compile(
+    r"not a bot|captcha|access denied|are you a robot|verify you are human|cloudflare|"
+    r"support team|enable javascript|checking your browser|ddos|включите javascript|подтвердите, что вы не робот",
+    re.I,
+)
+
+
+def is_russian(text):
+    """Нормальный русский текст: кириллицы заметно больше, чем латиницы."""
+    cyr = len(re.findall(r"[А-Яа-яЁё]", text))
+    lat = len(re.findall(r"[A-Za-z]", text))
+    return cyr > 20 and cyr > lat * 2
+
+
 def article_text(url, limit=1500):
     """Основной текст статьи: абзацы со страницы, без меню и подписей."""
     try:
         page = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}).text
     except Exception:
         return ""
+    if BOT_WALL_RE.search(page[:5000]) and len(page) < 20000:  # страница защиты от ботов вместо статьи
+        return ""
     paras = [clean(p) for p in re.findall(r"<p[^>]*>(.*?)</p>", page, re.S)]
-    paras = [p for p in paras if len(p) > 60 and not is_ad(p)]
+    paras = [p for p in paras if len(p) > 60 and not is_ad(p) and is_russian(p) and not BOT_WALL_RE.search(p)]
     return " ".join(paras)[:limit]
 
 
@@ -385,11 +401,12 @@ def main():
                 paras = [" ".join(sents[i:i + 2]) for i in range(0, len(sents), 2)]
                 if paras:
                     text += "\n\n" + "\n\n".join(html.escape(p) for p in paras)
-            graphic = is_graphic(title, summary)
-            if graphic:
-                text = "⚠️ <b>Не для слабонервных</b>\n\n" + text
             # картинка только настоящая; нет хорошего фото: публикуем просто текстом
             photo = download(img, BASE / "photo_tmp.jpg") if img else None
+            # предупреждение и спойлер нужны только для картинок и видео, в текстовых постах их нет
+            graphic = bool(photo) and is_graphic(title, summary)
+            if graphic:
+                text = "⚠️ <b>Не для слабонервных</b>\n\n" + text
             text = text[: (1024 if photo else 4096) - len(SIGNATURE)] + SIGNATURE
             if args.dry_run:
                 print(text, "\n[фото из новости]" if photo else "\n[только текст]", "\n---")
