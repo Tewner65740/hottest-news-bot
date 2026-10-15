@@ -18,7 +18,7 @@ SLOTS_MSK = (9, 13, 20)  # утро, обед, вечер по Москве
 EXTRA_SLOTS = {"2026-10-15": (21,)}  # разовый слот: пробный пост сегодня в 21:00 (только на эту дату)
 # разовый тест обходов загрузки фото: публикуется один раз сразу после этого времени (потом ключ test1 занят)
 TEST_AFTER_UTC = datetime(2026, 10, 15, 18, 30, tzinfo=timezone.utc)
-TEST2_AFTER_UTC = datetime(2026, 10, 15, 20, 55, tzinfo=timezone.utc)  # проба после включения сообщений
+TEST2_AFTER_UTC = datetime(2026, 10, 15, 21, 26, tzinfo=timezone.utc)  # проба загрузки через альбом (ключ слота test3)
 SLOT_WINDOW_MIN = 40  # слот считается открытым первые 40 минут часа
 SIGNATURE = "\n\n👉 Мы в Telegram: https://t.me/TheHottest_NewsEveryDay"
 
@@ -31,7 +31,7 @@ def current_slot(now=None):
     if now >= TEST_AFTER_UTC and now < TEST_AFTER_UTC + timedelta(hours=2):  # разовый пробный слот (уже использован)
         return "test1"
     if now >= TEST2_AFTER_UTC and now < TEST2_AFTER_UTC + timedelta(hours=3):  # проба загрузки фото (только с фото)
-        return "test2"
+        return "test3"
     now = now.astimezone(MSK)
     slots = SLOTS_MSK + EXTRA_SLOTS.get(now.strftime("%Y-%m-%d"), ())
     if now.hour in slots and now.minute < SLOT_WINDOW_MIN:
@@ -109,12 +109,12 @@ def upload_via_messages(token, image_bytes):
     return f"photo{saved['owner_id']}_{saved['id']}"
 
 
+ALBUM_ID = 253979763  # альбом «Новости», созданный вручную в сообществе (не секрет)
+
+
 def upload_via_album(token, group_id, image_bytes):
-    """Обход: загрузка в альбом сообщества (альбом создаётся один раз и ищется по названию)."""
-    title = "Новости"
-    albums = _call("photos.getAlbums", token, owner_id=f"-{group_id}")["items"]
-    album = next((a for a in albums if a["title"] == title), None)
-    album_id = album["id"] if album else _call("photos.createAlbum", token, group_id=group_id, title=title)["id"]
+    """Загрузка в готовый альбом сообщества: такие фото на стене показываются (в отличие от фото для сообщений)."""
+    album_id = ALBUM_ID
     srv = _call("photos.getUploadServer", token, group_id=group_id, album_id=album_id)
     up = requests.post(srv["upload_url"], files={"file1": ("photo.jpg", io.BytesIO(image_bytes))}, timeout=60).json()
     saved = _call("photos.save", token, group_id=group_id, album_id=album_id, server=up["server"],
@@ -136,10 +136,10 @@ def post(text, image_url=None, link=None, photo_only=False):
             attempts = []
             if user_token:  # фото на стену обычно грузит только токен пользователя-админа
                 attempts.append(("стена, токен пользователя", lambda: upload_photo(user_token, group_id, img)))
+            # «через сообщения» убрано: ВК принимает такое вложение, но на стене картинка не видна
             attempts += [
-                ("стена, ключ сообщества", lambda: upload_photo(token, group_id, img)),
-                ("через сообщения", lambda: upload_via_messages(token, img)),
                 ("через альбом сообщества", lambda: upload_via_album(token, group_id, img)),
+                ("стена, ключ сообщества", lambda: upload_photo(token, group_id, img)),
             ]
             for name, fn in attempts:
                 try:
@@ -183,13 +183,13 @@ def run_slot(seen, is_hot, dry_run=False, force=False):
     if dry_run:
         print("[VK]", slot, "\n" + text, "\n[фото]" if best[2] else "\n[без фото]")
         return False
-    if slot == "test2":  # для пробы нужен пост с фото
+    if slot == "test3":  # для пробы нужен пост с фото
         with_photo = [p for p in posts if p[2]]
         if not with_photo:
             return False
         best = with_photo[-1]
         text = to_vk_text(best[1])
-    post_id = post(text, best[2], link=f"https://t.me/{best[0]}", photo_only=(slot == "test2"))
+    post_id = post(text, best[2], link=f"https://t.me/{best[0]}", photo_only=(slot == "test3"))
     seen.add(f"__vk__={slot}")
     print("опубликовано во ВК, post_id", post_id)
     return True
