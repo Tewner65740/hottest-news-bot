@@ -14,7 +14,7 @@ import requests
 import listener as l
 
 RUN_SECONDS = int(os.environ.get("RUN_SECONDS", "270"))
-NEWS_EVERY = int(os.environ.get("NEWS_EVERY", "1800"))
+NEWS_EVERY = int(os.environ.get("NEWS_EVERY", "600"))
 AWAIT_FILE = l.nb.BASE / "awaiting.json"
 NEWS_STAMP = l.nb.BASE / "last_news.txt"
 OFFSET_FILE = l.nb.BASE / "offset.txt"

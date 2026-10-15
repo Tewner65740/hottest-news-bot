@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import feedparser
@@ -161,6 +162,19 @@ GRAPHIC_RE = re.compile(
 )
 
 
+HOT_RE = re.compile(
+    r"срочно|молни|теракт|взрыв|землетряс|эвакуац|ракетн\w+ опасност|обрушени|покушени|"
+    r"захват заложн|погибл[иоа]? \d+|чрезвычайн|введ[её]н режим|задержан[ао]? (?:министр|губернатор|замминистр)|"
+    r"отставк|объявил[аи]? (?:мобилизацию|войну)|крушени|падени[ею] самол",
+    re.I,
+)
+MIN_GAP = 45 * 60  # обычные посты: примерно 1 в 45–60 минут, около 24 в сутки как у каналов-образцов
+
+
+def is_hot(*texts):
+    return any(HOT_RE.search(t or "") for t in texts)
+
+
 def is_graphic(*texts):
     return any(GRAPHIC_RE.search(t or "") for t in texts)
 
@@ -272,10 +286,17 @@ def main():
         except Exception as e:
             print(f"! t.me/{ch}: {e}", file=sys.stderr)
 
+    # горячее первым; обычные посты выходят не чаще одного за MIN_GAP, чтобы лента не лилась пачкой
+    fresh.sort(key=lambda p: not is_hot(p[1], p[2]))
+    # время последнего обычного поста хранится служебной записью в seen.json (он уже есть в кэше Actions)
+    last_post = max((float(s.split("=", 1)[1]) for s in seen if s.startswith("__last_post__=")), default=0.0)
     posted = 0
     for link, title, summary, img in fresh:
         if posted >= args.limit:
             break
+        hot = is_hot(title, summary)
+        if not hot and time.time() - last_post < MIN_GAP and not args.dry_run:
+            break  # дальше только обычные, ждём следующего слота
         try:
             if "t.me/" not in link and len(summary) < 200:
                 summary = article_text(link) or summary
@@ -299,10 +320,14 @@ def main():
                 photo = news_card(head.strip(), image_path)
             if args.dry_run:
                 print(text, "\n[фото из новости]" if img else "\n[своя карточка]", "\n---")
-            elif os.environ.get("APPROVAL", "0") == "1":
-                send_draft(text, photo, graphic)
+            elif str(photo).lower().endswith((".mp4", ".mov")):
+                send_draft(text, photo, graphic)  # клипы только через подтверждение админа
             else:
                 send(text, photo, spoiler=graphic)
+                if not hot:
+                    seen = {s for s in seen if not s.startswith("__last_post__=")}
+                    last_post = time.time()
+                    seen.add(f"__last_post__={last_post}")
             seen.add(link)
             posted += 1
         except Exception as e:
