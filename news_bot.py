@@ -188,9 +188,8 @@ def send(caption, media_path, spoiler=False, chat_id=None, reply_markup=None, ho
         "chat_id": chat_id or os.environ["TELEGRAM_CHANNEL"],
         "caption": caption,
         "parse_mode": "HTML",
-        # SILENT=1 в .env: посты без звука/уведомлений. Для обычного режима поставьте SILENT=0.
-        # обычные посты тихо (SILENT=1), горячие новости со звуком
-        "disable_notification": (os.environ.get("SILENT", "1") == "1" and not hot) if not chat_id else False,
+        # все посты со звуком; чтобы сделать обычные посты тихими, поставьте SILENT_MODE=1
+        "disable_notification": os.environ.get("SILENT_MODE", "0") == "1" and not hot and not chat_id,
     }
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)

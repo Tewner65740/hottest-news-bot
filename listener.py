@@ -40,7 +40,7 @@ def post_media(chat_id, kind, file_id, caption, spoiler=False, markup=None, titl
         return
     data = {"chat_id": os.environ["TELEGRAM_CHANNEL"] if chat_id == "channel" else chat_id,
             kind: file_id, "caption": caption, "parse_mode": "HTML", "has_spoiler": spoiler,
-            "disable_notification": chat_id == "channel" and os.environ.get("SILENT", "1") == "1"}
+            "disable_notification": chat_id == "channel" and os.environ.get("SILENT_MODE", "0") == "1"}
     if markup:
         data["reply_markup"] = markup
     r = api("sendPhoto" if kind == "photo" else "sendVideo", **data)
