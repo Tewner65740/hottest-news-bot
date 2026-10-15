@@ -149,12 +149,26 @@ def is_placeholder(path):
         return False
 
 
+MAX_VIDEO_MB = 45  # лимит Telegram на загрузку файла ботом 50 МБ
+
+
 def download(url, path):
     if "lenta_og" in url or "/assets/" in url:  # служебная картинка сайта, не фото новости
         return None
+    is_video = ".mp4" in url.split("?")[0].lower()
+    if is_video:
+        path = path.with_name("video_tmp.mp4")
     try:
-        r = requests.get(url, timeout=30)
+        r = requests.get(url, timeout=120 if is_video else 30, stream=is_video)
         r.raise_for_status()
+        if is_video:
+            if int(r.headers.get("content-length", 0)) > MAX_VIDEO_MB * 1024 * 1024:
+                return None
+            data = r.content
+            if len(data) > MAX_VIDEO_MB * 1024 * 1024:
+                return None
+            path.write_bytes(data)
+            return path
         path.write_bytes(r.content)
         if is_placeholder(path):
             return None
@@ -179,9 +193,10 @@ def tg_posts(channel):
         if len(text) <= 40:
             continue
         img = None
-        if channel in IMAGE_TG_OK:  # фото берём только у каналов без водяных знаков
+        if channel in IMAGE_TG_OK:  # фото и видео берём только у каналов без водяных знаков
+            v = re.search(r'<video[^>]+src="([^"]+)"', block)
             p = re.search(r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", block)
-            img = p.group(1) if p else None
+            img = v.group(1) if v else (p.group(1) if p else None)  # видео важнее фото
         title = re.split(r"(?<=[.!?])\s+", text.split("\n")[0])[0]
         if len(title) > 260:  # не режем посреди слова
             title = title[:260].rsplit(" ", 1)[0]
@@ -428,6 +443,7 @@ def main():
     # время последнего обычного поста хранится служебной записью в seen.json (он уже есть в кэше Actions)
     last_post = max((float(s.split("=", 1)[1]) for s in seen if s.startswith("__last_post__=")), default=0.0)
     posted = 0
+    video_drafts = 0
     for link, title, summary, img in fresh:
         if posted >= args.limit:
             break
@@ -464,6 +480,10 @@ def main():
                     text += "\n\n" + "\n\n".join(html.escape(p) for p in paras)
             # картинка только настоящая; нет хорошего фото: публикуем просто текстом
             photo = download(img, BASE / "photo_tmp.jpg") if img else None
+            if photo and str(photo).lower().endswith(".mp4"):
+                if video_drafts >= 1:  # не заваливаем админа клипами: один на запуск
+                    continue
+                video_drafts += 1
             # предупреждение и спойлер нужны только для картинок и видео, в текстовых постах их нет
             graphic = bool(photo) and is_graphic(title, summary)
             if graphic:
