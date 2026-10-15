@@ -95,7 +95,8 @@ def post(text, image_url=None, link=None):
     if image_url:
         try:
             img = requests.get(image_url, timeout=30).content
-            attachments = upload_photo(token, group_id, img)
+            # фото в ВК грузит только токен пользователя-админа (VK_USER_TOKEN); ключ сообщества это запрещает
+            attachments = upload_photo(os.environ.get("VK_USER_TOKEN") or token, group_id, img)
         except Exception as e:
             # ключ сообщества не может грузить фото в ВК: прикрепляем ссылку на пост в Telegram,
             # ВК сам покажет карточку с картинкой из него
