@@ -36,7 +36,7 @@ def current_slot(now=None):
     return None
 
 
-def channel_posts(channel, limit=12):
+def channel_posts(channel, limit=20):
     """Последние посты нашего Telegram-канала: [(id, текст, URL фото или None)]."""
     page = requests.get(f"https://t.me/s/{channel.lstrip('@')}", timeout=30,
                         headers={"User-Agent": "Mozilla/5.0"}).text
@@ -151,7 +151,9 @@ def post(text, image_url=None, link=None):
                 except Exception as e:
                     print(f"! VK фото [{name}] публикация с вложением: {e}", file=sys.stderr)
     # не удалось приложить фото: прикрепляем ссылку на пост в Telegram, ВК покажет карточку с картинкой
-    r = _call("wall.post", token, owner_id=owner, from_group=1, message=text, attachments=link or "")
+    # ссылка нужна только у постов с фото: у текстовой записи нет картинки для превью, и ВК такую ссылку отклоняет
+    r = _call("wall.post", token, owner_id=owner, from_group=1, message=text,
+              attachments=(link or "") if image_url else "")
     return r["post_id"]
 
 

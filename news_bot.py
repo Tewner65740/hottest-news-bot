@@ -28,7 +28,7 @@ FEEDS = [
 ]
 
 TG_CHANNELS = ["novosti_efir", "rhymestg", "ostorozhno_novosti", "moscowach", "rian_ru", "bbbreaking", "Dyadyabatya0"]
-IMAGE_TG_OK = {"Dyadyabatya0"}  # у этого канала кадры без водяных знаков (проверено по последнему посту)
+IMAGE_TG_OK = {"Dyadyabatya0", "bbbreaking"}  # каналы, откуда берём фото и видео (владелец: водяных знаков нет)
 
 # Фото берём только у источников, чьи изображения проверены на отсутствие водяных знаков.
 # Остальные (ТАСС, РИА, Интерфакс, чужие Telegram-каналы) заменяет наша карточка.
