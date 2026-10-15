@@ -89,7 +89,7 @@ def upload_photo(token, group_id, image_bytes):
     return f"photo{saved['owner_id']}_{saved['id']}"
 
 
-def post(text, image_url=None):
+def post(text, image_url=None, link=None):
     token, group_id = os.environ["VK_TOKEN"], os.environ["VK_GROUP_ID"].lstrip("-")
     attachments = ""
     if image_url:
@@ -97,7 +97,12 @@ def post(text, image_url=None):
             img = requests.get(image_url, timeout=30).content
             attachments = upload_photo(token, group_id, img)
         except Exception as e:
+            # ключ сообщества не может грузить фото в ВК: прикрепляем ссылку на пост в Telegram,
+            # ВК сам покажет карточку с картинкой из него
             print("! VK фото:", e, file=sys.stderr)
+            attachments = link or ""
+    elif link:
+        attachments = link
     r = _call("wall.post", token, owner_id=f"-{group_id}", from_group=1, message=text, attachments=attachments)
     return r["post_id"]
 
@@ -117,7 +122,7 @@ def run_slot(seen, is_hot, dry_run=False, force=False):
     if dry_run:
         print("[VK]", slot, "\n" + text, "\n[фото]" if best[2] else "\n[без фото]")
         return False
-    post_id = post(text, best[2])
+    post_id = post(text, best[2], link=f"https://t.me/{best[0]}")
     seen.add(f"__vk__={slot}")
     print("опубликовано во ВК, post_id", post_id)
     return True
