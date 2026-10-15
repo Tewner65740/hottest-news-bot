@@ -385,10 +385,16 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="не публиковать, только показать")
     ap.add_argument("--set-avatar", action="store_true", help="установить avatar.png как фото канала")
     ap.add_argument("--set-description", action="store_true", help="установить описание канала")
+    ap.add_argument("--vk-preview", action="store_true", help="показать, какой пост ушёл бы во ВК (без публикации)")
     ap.add_argument("--limit", type=int, default=5, help="максимум постов за запуск")
     args = ap.parse_args()
 
     load_env()
+    if args.vk_preview:
+        import vk_post
+
+        vk_post.run_slot(set(), is_hot, dry_run=True, force=True)
+        return
     if args.set_description:
         set_description()
         return
@@ -479,6 +485,12 @@ def main():
             print(f"! {link}: {e}", file=sys.stderr)
 
     if not args.dry_run:
+        try:  # ВКонтакте: 3 лучших поста в сутки (если заданы VK_TOKEN и VK_GROUP_ID)
+            import vk_post
+
+            vk_post.run_slot(seen, is_hot)
+        except Exception as e:
+            print("! ВК:", e, file=sys.stderr)
         SEEN_FILE.write_text(json.dumps(sorted(seen)), encoding="utf-8")
         purge_junk()
     print(f"Опубликовано: {posted}" + (" (первый запуск)" if first_run else ""))
