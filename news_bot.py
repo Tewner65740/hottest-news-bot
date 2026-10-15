@@ -102,6 +102,27 @@ SPEAKER_RE = re.compile(
 )
 
 
+ATTRIB_RE = re.compile(
+    r"^(?P<head>.{15,}?)[,—–-]\s*(?P<verb>заявил[аи]?|сообщил[аи]?|отметил[аи]?|подчеркнул[аи]?|"
+    r"рассказал[аи]?|пояснил[аи]?|сказал[аи]?|признал[аи]?|предупредил[аи]?|уточнил[аи]?|"
+    r"считает|полагает|добавил[аи]?|напомнил[аи]?|пишет|сообщает|передаёт|передает)\s+"
+    r"(?P<who>[^.!?]{3,120}?)\s*[.!?]?$",
+    re.I,
+)
+
+
+def split_attribution(title):
+    """«Цена выросла, заявил вице-премьер Александр Новак» -> («Цена выросла», «Заявил вице-премьер Александр Новак»).
+    Автор слов выносится в отдельную строку, чтобы сразу было видно, чьи это слова."""
+    m = ATTRIB_RE.match(title.strip())
+    if not m:
+        return title, None
+    who = m.group("who").strip()
+    line = f"{m.group('verb').capitalize()} {who}"
+    head = m.group("head").strip().rstrip(",:;—–-")
+    return head, line
+
+
 def attribute_quote(title, summary):
     """Заголовок от первого лица без автора вводит в заблуждение: ставим имя говорящего.
     Возвращает новый заголовок или None, если автора найти не удалось."""
@@ -161,7 +182,9 @@ def tg_posts(channel):
         if channel in IMAGE_TG_OK:  # фото берём только у каналов без водяных знаков
             p = re.search(r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", block)
             img = p.group(1) if p else None
-        title = re.split(r"(?<=[.!?])\s+", text.split("\n")[0])[0][:120]
+        title = re.split(r"(?<=[.!?])\s+", text.split("\n")[0])[0]
+        if len(title) > 260:  # не режем посреди слова
+            title = title[:260].rsplit(" ", 1)[0]
         out.append((f"https://t.me/{post}", title, text, img))
     return out[-10:]
 
@@ -416,12 +439,14 @@ def main():
             if attributed is None:  # прямая речь без понятного автора не публикуем
                 seen.add(link)
                 continue
-            title = attributed
+            title, speaker_line = split_attribution(attributed)
             body = strip_branding(rewrite(title, summary))
             if not body:
                 continue
             head, _, rest = body.partition("\n")
             text = f"<b>{html.escape(head.strip())}</b>"
+            if speaker_line:  # кто сказал: отдельной строкой под заголовком
+                text += f"\n\n🗣 <b>{html.escape(speaker_line)}</b>"
             if rest.strip():
                 # короткие абзацы по одному-два предложения, как в образцах
                 sents = re.split(r"(?<=[.!?])\s+", rest.strip())
