@@ -16,6 +16,8 @@ API = "https://api.vk.com/method/"
 VERSION = "5.199"
 SLOTS_MSK = (9, 13, 20)  # утро, обед, вечер по Москве
 EXTRA_SLOTS = {"2026-10-15": (21,)}  # разовый слот: пробный пост сегодня в 21:00 (только на эту дату)
+# разовый тест обходов загрузки фото: публикуется один раз сразу после этого времени (потом ключ test1 занят)
+TEST_AFTER_UTC = datetime(2026, 10, 15, 18, 30, tzinfo=timezone.utc)
 SLOT_WINDOW_MIN = 40  # слот считается открытым первые 40 минут часа
 SIGNATURE = "\n\n👉 Мы в Telegram: https://t.me/TheHottest_NewsEveryDay"
 
@@ -24,7 +26,10 @@ MSK = timezone(timedelta(hours=3))
 
 def current_slot(now=None):
     """Ключ открытого слота («2026-10-15-13») или None."""
-    now = (now or datetime.now(timezone.utc)).astimezone(MSK)
+    now = now or datetime.now(timezone.utc)
+    if now >= TEST_AFTER_UTC and now < TEST_AFTER_UTC + timedelta(hours=3):  # разовый пробный слот
+        return "test1"
+    now = now.astimezone(MSK)
     slots = SLOTS_MSK + EXTRA_SLOTS.get(now.strftime("%Y-%m-%d"), ())
     if now.hour in slots and now.minute < SLOT_WINDOW_MIN:
         return now.strftime("%Y-%m-%d-%H")
@@ -89,22 +94,64 @@ def upload_photo(token, group_id, image_bytes):
     return f"photo{saved['owner_id']}_{saved['id']}"
 
 
+def _upload_to(upload_url, image_bytes):
+    return requests.post(upload_url, files={"photo": ("photo.jpg", io.BytesIO(image_bytes))}, timeout=60).json()
+
+
+def upload_via_messages(token, image_bytes):
+    """Обход: загрузка как для сообщений (доступна ключу сообщества)."""
+    srv = _call("photos.getMessagesUploadServer", token)
+    up = _upload_to(srv["upload_url"], image_bytes)
+    saved = _call("photos.saveMessagesPhoto", token, photo=up["photo"], server=up["server"], hash=up["hash"])[0]
+    return f"photo{saved['owner_id']}_{saved['id']}"
+
+
+def upload_via_album(token, group_id, image_bytes):
+    """Обход: загрузка в альбом сообщества (альбом создаётся один раз и ищется по названию)."""
+    title = "Новости"
+    albums = _call("photos.getAlbums", token, owner_id=f"-{group_id}")["items"]
+    album = next((a for a in albums if a["title"] == title), None)
+    album_id = album["id"] if album else _call("photos.createAlbum", token, group_id=group_id, title=title)["id"]
+    srv = _call("photos.getUploadServer", token, group_id=group_id, album_id=album_id)
+    up = requests.post(srv["upload_url"], files={"file1": ("photo.jpg", io.BytesIO(image_bytes))}, timeout=60).json()
+    saved = _call("photos.save", token, group_id=group_id, album_id=album_id, server=up["server"],
+                  photos_list=up["photos_list"], hash=up["hash"])[0]
+    return f"photo{saved['owner_id']}_{saved['id']}"
+
+
 def post(text, image_url=None, link=None):
     token, group_id = os.environ["VK_TOKEN"], os.environ["VK_GROUP_ID"].lstrip("-")
-    attachments = ""
+    owner = f"-{group_id}"
     if image_url:
         try:
             img = requests.get(image_url, timeout=30).content
-            # фото в ВК грузит только токен пользователя-админа (VK_USER_TOKEN); ключ сообщества это запрещает
-            attachments = upload_photo(os.environ.get("VK_USER_TOKEN") or token, group_id, img)
         except Exception as e:
-            # ключ сообщества не может грузить фото в ВК: прикрепляем ссылку на пост в Telegram,
-            # ВК сам покажет карточку с картинкой из него
-            print("! VK фото:", e, file=sys.stderr)
-            attachments = link or ""
-    elif link:
-        attachments = link
-    r = _call("wall.post", token, owner_id=f"-{group_id}", from_group=1, message=text, attachments=attachments)
+            print("! VK скачивание фото:", e, file=sys.stderr)
+            img = None
+        if img:
+            user_token = os.environ.get("VK_USER_TOKEN")
+            attempts = []
+            if user_token:  # фото на стену обычно грузит только токен пользователя-админа
+                attempts.append(("стена, токен пользователя", lambda: upload_photo(user_token, group_id, img)))
+            attempts += [
+                ("стена, ключ сообщества", lambda: upload_photo(token, group_id, img)),
+                ("через сообщения", lambda: upload_via_messages(token, img)),
+                ("через альбом сообщества", lambda: upload_via_album(token, group_id, img)),
+            ]
+            for name, fn in attempts:
+                try:
+                    photo = fn()
+                except Exception as e:
+                    print(f"! VK фото [{name}] загрузка: {e}", file=sys.stderr)
+                    continue
+                try:
+                    r = _call("wall.post", token, owner_id=owner, from_group=1, message=text, attachments=photo)
+                    print(f"VK фото [{name}] сработало, вложение {photo}")
+                    return r["post_id"]
+                except Exception as e:
+                    print(f"! VK фото [{name}] публикация с вложением: {e}", file=sys.stderr)
+    # не удалось приложить фото: прикрепляем ссылку на пост в Telegram, ВК покажет карточку с картинкой
+    r = _call("wall.post", token, owner_id=owner, from_group=1, message=text, attachments=link or "")
     return r["post_id"]
 
 
