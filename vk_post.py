@@ -151,9 +151,15 @@ def post(text, image_url=None, link=None):
                 except Exception as e:
                     print(f"! VK фото [{name}] публикация с вложением: {e}", file=sys.stderr)
     # не удалось приложить фото: прикрепляем ссылку на пост в Telegram, ВК покажет карточку с картинкой
-    # ссылка нужна только у постов с фото: у текстовой записи нет картинки для превью, и ВК такую ссылку отклоняет
-    r = _call("wall.post", token, owner_id=owner, from_group=1, message=text,
-              attachments=(link or "") if image_url else "")
+    # ссылка нужна только у постов с фото: у текстовой записи нет картинки для превью, и ВК такую ссылку отклоняет;
+    # она же отклоняется, если картинка слишком мелкая (link_photo_sizing_rule): тогда публикуем просто текстом
+    if image_url and link:
+        try:
+            r = _call("wall.post", token, owner_id=owner, from_group=1, message=text, attachments=link)
+            return r["post_id"]
+        except Exception as e:
+            print(f"! VK карточка-ссылка отклонена, публикую текстом: {e}", file=sys.stderr)
+    r = _call("wall.post", token, owner_id=owner, from_group=1, message=text, attachments="")
     return r["post_id"]
 
 
