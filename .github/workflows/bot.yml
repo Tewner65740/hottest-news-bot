@@ -5,7 +5,6 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
-# запуски идут друг за другом, чтобы два экземпляра не читали Telegram одновременно
 concurrency:
   group: bot
   cancel-in-progress: false
@@ -64,3 +63,9 @@ jobs:
             last_news.txt
             offset.txt
           key: state-${{ github.run_id }}
+
+      - name: Start next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bot.yml --ref main
