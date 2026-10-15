@@ -95,6 +95,25 @@ def strip_branding(text):
     return "\n".join(l for l in text.split("\n") if not BRAND_RE.search(l)).strip()
 
 
+FIRST_PERSON_RE = re.compile(r"^\W*(?:я|мы|мне|мой|моя|мо[ёе]|наш\w*|меня|нас)\b", re.I)
+SPEAKER_RE = re.compile(
+    r"([А-ЯЁ][\w\-]+)\s(?:заявил[аи]?|сказал[аи]?|подчеркнул[аи]?|отметил[аи]?|"
+    r"рассказал[аи]?|признал[аи]?|пояснил[аи]?|добавил[аи]?)"
+)
+
+
+def attribute_quote(title, summary):
+    """Заголовок от первого лица без автора вводит в заблуждение: ставим имя говорящего.
+    Возвращает новый заголовок или None, если автора найти не удалось."""
+    if not FIRST_PERSON_RE.search(title):
+        return title
+    m = SPEAKER_RE.search(summary or "")
+    if not m:
+        return None
+    speaker = m.group(1).strip()
+    return f"{speaker}: «{title.rstrip('.')}»"
+
+
 def is_placeholder(path):
     """Заглушка с логотипом сайта: почти целиком чёрная или однотонная картинка."""
     try:
@@ -347,6 +366,11 @@ def main():
         try:
             if "t.me/" not in link and len(summary) < 200:
                 summary = article_text(link) or summary
+            attributed = attribute_quote(title, summary)
+            if attributed is None:  # прямая речь без понятного автора не публикуем
+                seen.add(link)
+                continue
+            title = attributed
             body = strip_branding(rewrite(title, summary))
             if not body:
                 continue
