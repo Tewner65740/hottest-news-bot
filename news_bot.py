@@ -27,7 +27,8 @@ FEEDS = [
     "https://www.interfax.ru/rss.asp",
 ]
 
-TG_CHANNELS = ["novosti_efir", "rhymestg", "ostorozhno_novosti", "moscowach", "rian_ru", "bbbreaking"]
+TG_CHANNELS = ["novosti_efir", "rhymestg", "ostorozhno_novosti", "moscowach", "rian_ru", "bbbreaking", "Dyadyabatya0"]
+IMAGE_TG_OK = {"Dyadyabatya0"}  # у этого канала кадры без водяных знаков (проверено по последнему посту)
 
 # Фото берём только у источников, чьи изображения проверены на отсутствие водяных знаков.
 # Остальные (ТАСС, РИА, Интерфакс, чужие Telegram-каналы) заменяет наша карточка.
@@ -62,7 +63,7 @@ def clean(text):
 BRAND_RE = re.compile(
     r"@\w+|t\.me/\S*|https?://\S+|подпис|присылай|прислать|предложить новост|"
     r"реклам|на\s+связи|"
-    + "|".join(TG_CHANNELS) + r"|эфир|рифмы|осторожно|москвач|риа новости",
+    + "|".join(TG_CHANNELS) + r"|эфир|рифмы|осторожно|москвач|риа новости|дядя бат|батя",
     re.I,
 )
 
@@ -99,16 +100,23 @@ def tg_posts(channel):
     """Последние посты публичного канала через веб-превью t.me/s/."""
     page = requests.get(f"https://t.me/s/{channel}", timeout=30, headers={"User-Agent": "Mozilla/5.0"}).text
     out = []
-    for post, body in re.findall(
-        r'data-post="([^"]+)".*?class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', page, re.S
-    ):
-        raw = clean(re.sub(r"<br\s*/?>", "\n", body))
+    for block in page.split('data-post="')[1:]:
+        post = block.split('"', 1)[0]
+        m = re.search(r'class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, re.S)
+        if not m:
+            continue
+        raw = clean(re.sub(r"<br\s*/?>", "\n", m.group(1)))
         if is_ad(raw):
             continue
-        text = strip_branding(raw)
-        if len(text) > 40:
-            first = text.split("\n")[0][:120]
-            out.append((f"https://t.me/{post}", first, text))
+        text = re.sub(r"[\s📲👉…]+$", "", strip_branding(raw))
+        if len(text) <= 40:
+            continue
+        img = None
+        if channel in IMAGE_TG_OK:  # фото берём только у каналов без водяных знаков
+            p = re.search(r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", block)
+            img = p.group(1) if p else None
+        title = re.split(r"(?<=[.!?])\s+", text.split("\n")[0])[0][:120]
+        out.append((f"https://t.me/{post}", title, text, img))
     return out[-10:]
 
 
@@ -282,7 +290,7 @@ def main():
 
     for ch in TG_CHANNELS:
         try:
-            fresh += [p + (None,) for p in tg_posts(ch) if p[0] not in seen]
+            fresh += [p for p in tg_posts(ch) if p[0] not in seen]
         except Exception as e:
             print(f"! t.me/{ch}: {e}", file=sys.stderr)
 
@@ -294,6 +302,9 @@ def main():
     for link, title, summary, img in fresh:
         if posted >= args.limit:
             break
+        if not img:  # без настоящей картинки с места события не публикуем
+            seen.add(link)
+            continue
         hot = is_hot(title, summary)
         if not hot and time.time() - last_post < MIN_GAP and not args.dry_run:
             break  # дальше только обычные, ждём следующего слота
@@ -308,8 +319,12 @@ def main():
             if rest.strip():
                 # короткие абзацы по одному-два предложения, как в образцах
                 sents = re.split(r"(?<=[.!?])\s+", rest.strip())
+                norm = lambda s: re.sub(r"\W+", "", s).lower()
+                while sents and (norm(sents[0]) in norm(head) or norm(head) in norm(sents[0])):
+                    sents.pop(0)  # первое предложение повторяет заголовок
                 paras = [" ".join(sents[i:i + 2]) for i in range(0, len(sents), 2)]
-                text += "\n\n" + "\n\n".join(html.escape(p) for p in paras)
+                if paras:
+                    text += "\n\n" + "\n\n".join(html.escape(p) for p in paras)
             graphic = is_graphic(title, summary)
             if graphic:
                 text = "⚠️ <b>Не для слабонервных</b>\n\n" + text
