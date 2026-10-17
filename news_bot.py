@@ -135,9 +135,25 @@ def split_attribution(title):
     if not m:
         return title, None
     who = m.group("who").strip()
-    line = f"{m.group('verb').capitalize()} {who}"
+    # «в интервью ТАСС Александр Шохин» / «на пресс-конференции глава МИД Лавров» -> оставляем только того, кто сказал
+    if re.match(r"(?i)(?:в|на|по|для|о|об|при)\s", who):
+        tail = re.search(r"((?:[а-яё\-]+\s){0,2}[А-ЯЁ][а-яё\-]+(?:\s[А-ЯЁ][а-яё\-]+){0,2})$", who)
+        if tail:
+            who = tail.group(1).strip()
+            # «глава МИД Сергей Лавров» -> оставляем должность и имя, но отбрасываем предлог/вводное слово в начале
+            who = re.sub(r"(?i)^(?:в|на|по|для|о|об|при|интервью|беседе|разговоре)\s+", "", who)
+    line = who[:1].upper() + who[1:]  # «Александр Новак», «вице-премьер Александр Новак»: подпись «— автор» под заголовком
     head = m.group("head").strip().rstrip(",:;—–-")
     return head, line
+
+
+QUOTE_RE = re.compile(r"«[^»]{25,}»")
+
+
+def fmt_paragraph(p):
+    """Прямая речь («цитата ≥25 знаков») оформляется цитатой Telegram, остальное обычным абзацем."""
+    esc = html.escape(p)
+    return f"<blockquote>{esc}</blockquote>" if QUOTE_RE.search(p) else esc
 
 
 def attribute_quote(title, summary):
@@ -167,6 +183,21 @@ def is_placeholder(path):
 
 
 MAX_VIDEO_MB = 45  # лимит Telegram на загрузку файла ботом 50 МБ
+MAX_ALBUM_MB = 150  # общий лимит на все видео одного поста
+
+
+def download_all(urls):
+    """Скачивает все видео поста (до 10); слишком большие и недоступные пропускаются."""
+    paths, total = [], 0
+    for i, u in enumerate(urls[:10]):
+        p = download(u, BASE / f"video_{i}.mp4")
+        if not p:
+            continue
+        total += p.stat().st_size
+        if total > MAX_ALBUM_MB * 1024 * 1024:
+            break
+        paths.append(p)
+    return paths
 
 
 def download(url, path):
@@ -174,7 +205,7 @@ def download(url, path):
         return None
     is_video = ".mp4" in url.split("?")[0].lower()
     if is_video:
-        path = path.with_name("video_tmp.mp4")
+        path = path.with_suffix(".mp4")
     try:
         r = requests.get(url, timeout=120 if is_video else 30, stream=is_video)
         r.raise_for_status()
@@ -211,9 +242,12 @@ def tg_posts(channel):
             continue
         img = None
         if channel in IMAGE_TG_OK:  # фото и видео берём только у каналов без водяных знаков
-            v = re.search(r'<video[^>]+src="([^"]+)"', block)
+            vids = list(dict.fromkeys(re.findall(r'<video[^>]+src="([^"]+)"', block)))  # все видео альбома
             p = re.search(r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", block)
-            img = v.group(1) if v else (p.group(1) if p else None)  # видео важнее фото
+            if vids:  # видео важнее фото; несколько видео отдаём списком
+                img = vids if len(vids) > 1 else vids[0]
+            else:
+                img = p.group(1) if p else None
         title = re.split(r"(?<=[.!?])\s+", text.split("\n")[0])[0]
         if len(title) > 260:  # не режем посреди слова
             title = title[:260].rsplit(" ", 1)[0]
@@ -298,10 +332,12 @@ def rewrite(title, summary):
     return r.json()["content"][0]["text"].strip()
 
 
+# «Не для слабонервных»: только явная жесть, 18+ и кровь. Слова ищутся с начала слова (\b), а не внутри других слов
+# (раньше «ранен» срабатывало на «сохранении»). Общие слова вроде «взрыв», «пожар», «погиб» сюда не входят.
 GRAPHIC_RE = re.compile(
-    r"труп|тела? погиб|погиб|убит|убий|расстрел|кровь|крови|кровав|расчлен|обезглав|"
-    r"смерт|жертв|взрыв|теракт|пожар|дтп|авари|катастроф|раненн|ранен|насили|изнасил|"
-    r"пытк|самоубий|тело|мертв|мёртв|черв|паразит|18\+|шок",
+    r"\b(?:труп\w*|тел[ао]\s+погибш\w*|обезглавл\w*|расчленен\w*|расстрелян\w*|казн[ьи]\b|изнасил\w*|"
+    r"кровав\w*|кров[ьи]\b|вскрыт\w*\s+вен\w*|порно\w*|интим\w*\s+(?:фото|видео)|обнажённ\w*|обнажен\w*|"
+    r"голая|голый|голые|18\+|пытк\w*|самоубийств\w*|расчлен\w*)",
     re.I,
 )
 
@@ -364,25 +400,101 @@ def send(caption, media_path, spoiler=False, chat_id=None, reply_markup=None, ho
 
 
 PENDING = BASE / "pending"
+WARN = "⚠️ <b>Не для слабонервных</b>\n\n"
 
 
-def send_draft(caption, media_path, spoiler):
-    """Присылает черновик админу в личку с кнопками; публикует listener.py после нажатия."""
+def compose_caption(core, graphic):
+    """Подпись поста: при необходимости с пометкой «Не для слабонервных» сверху."""
+    return (WARN if graphic else "") + core
+
+
+def safe_cut(text, limit):
+    """Обрезка по границе абзаца, чтобы не оставить незакрытый тег (<blockquote>)."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    if "\n\n" in cut:
+        cut = cut.rsplit("\n\n", 1)[0]
+    else:
+        cut = cut.rsplit(" ", 1)[0]
+    if cut.count("<blockquote>") != cut.count("</blockquote>"):
+        cut = cut.rsplit("<blockquote>", 1)[0].rstrip()
+    return cut
+
+
+def send_media_group(paths, caption=None, spoiler=False, chat_id=None, hot=False):
+    """Альбом из нескольких видео/фото (до 10); подпись ставится на первый элемент."""
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    media, files, handles = [], {}, []
+    try:
+        for i, p in enumerate(paths[:10]):
+            video = str(p).lower().endswith((".mp4", ".mov"))
+            item = {"type": "video" if video else "photo", "media": f"attach://f{i}", "has_spoiler": bool(spoiler)}
+            if video:
+                item["supports_streaming"] = True
+            if i == 0 and caption:
+                item["caption"], item["parse_mode"] = caption, "HTML"
+            media.append(item)
+            fh = open(p, "rb")
+            handles.append(fh)
+            files[f"f{i}"] = fh
+        data = {
+            "chat_id": chat_id or os.environ["TELEGRAM_CHANNEL"],
+            "media": json.dumps(media),
+            "disable_notification": os.environ.get("SILENT_MODE", "0") == "1" and not hot and not chat_id,
+        }
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMediaGroup", data=data, files=files, timeout=600)
+        r.raise_for_status()
+    finally:
+        for fh in handles:
+            fh.close()
+
+
+def draft_keyboard(pid, n, selected, graphic):
+    """Кнопки черновика: выбор видео (если их несколько), публикация, пропуск и пометка «Не для слабонервных»."""
+    rows = []
+    if n > 1:
+        btns = [
+            {"text": ("✅ " if i in selected else "⬜ ") + f"Видео {i + 1}", "callback_data": f"tg:{pid}:{i}"}
+            for i in range(n)
+        ]
+        rows += [btns[i:i + 3] for i in range(0, n, 3)]
+        rows.append([{"text": "Выбрать все", "callback_data": f"all:{pid}"},
+                     {"text": "Снять все", "callback_data": f"none:{pid}"}])
+    label = "✅ Опубликовать" + (f" ({len(selected)} из {n})" if n > 1 else "")
+    rows.append([{"text": label, "callback_data": f"ok:{pid}"},
+                 {"text": "❌ Пропустить", "callback_data": f"no:{pid}"}])
+    rows.append([{"text": "⚠️ Пометку убрать" if graphic else "⚠️ Добавить пометку «Не для слабонервных»",
+                  "callback_data": f"wm:{pid}"}])
+    return {"inline_keyboard": rows}
+
+
+def send_draft(core, media_paths, graphic):
+    """Черновик админу в личку: один клип или несколько. Публикует listener после нажатия кнопок."""
     import uuid
 
+    if isinstance(media_paths, (str, Path)):
+        media_paths = [media_paths]
     PENDING.mkdir(exist_ok=True)
     pid = uuid.uuid4().hex[:10]
-    media = PENDING / f"{pid}{Path(media_path).suffix}"
-    media.write_bytes(Path(media_path).read_bytes())
-    (PENDING / f"{pid}.json").write_text(
-        json.dumps({"caption": caption, "media": media.name, "spoiler": spoiler}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    markup = {"inline_keyboard": [[
-        {"text": "✅ Опубликовать", "callback_data": f"ok:{pid}"},
-        {"text": "❌ Пропустить", "callback_data": f"no:{pid}"},
-    ]]}
-    send(caption, media, spoiler, chat_id=os.environ["ADMIN_CHAT_ID"], reply_markup=markup)
+    names = []
+    for i, p in enumerate(media_paths):
+        dst = PENDING / f"{pid}_{i}{Path(p).suffix}"
+        dst.write_bytes(Path(p).read_bytes())
+        names.append(dst.name)
+    n = len(names)
+    selected = list(range(n))
+    meta = {"core": core, "media": names, "graphic": bool(graphic), "selected": selected}
+    (PENDING / f"{pid}.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    admin = os.environ["ADMIN_CHAT_ID"]
+    kb = draft_keyboard(pid, n, selected, graphic)
+    caption = compose_caption(core, graphic)
+    if n == 1:
+        send(caption, PENDING / names[0], graphic, chat_id=admin, reply_markup=kb)
+    else:
+        send_media_group([PENDING / x for x in names], None, graphic, chat_id=admin)  # предпросмотр: все видео подряд
+        send(caption + f"\n\n🎞 Видео в посте: {n}. Выберите нужные и нажмите «Опубликовать».", None,
+             chat_id=admin, reply_markup=kb)
 
 
 DESCRIPTION = "🔥 Самые горячие новости каждый день: коротко, по делу и без воды.\n\nПрислать новость: @Your_Best_Lucky_Friend_bot\nПо вопросам рекламы: @Vovandr22"
@@ -484,8 +596,8 @@ def main():
                 continue
             head, _, rest = body.partition("\n")
             text = f"<b>{html.escape(head.strip())}</b>"
-            if speaker_line:  # кто сказал: отдельной строкой под заголовком
-                text += f"\n\n🗣 <b>{html.escape(speaker_line)}</b>"
+            if speaker_line:  # кто сказал: отдельной строкой под заголовком, как «— Лукашенко»
+                text += f"\n— {html.escape(speaker_line)}"
             if rest.strip():
                 # короткие абзацы по одному-два предложения, как в образцах
                 sents = re.split(r"(?<=[.!?])\s+", rest.strip())
@@ -494,24 +606,28 @@ def main():
                     sents.pop(0)  # первое предложение повторяет заголовок
                 paras = [" ".join(sents[i:i + 2]) for i in range(0, len(sents), 2)]
                 if paras:
-                    text += "\n\n" + "\n\n".join(html.escape(p) for p in paras)
+                    text += "\n\n" + "\n\n".join(fmt_paragraph(p) for p in paras)
             # картинка только настоящая; нет хорошего фото: публикуем просто текстом
-            photo = download(img, BASE / "photo_tmp.jpg") if img else None
+            if isinstance(img, list):  # в посте несколько видео: берём все
+                media = download_all(img)
+            else:
+                p = download(img, BASE / "photo_tmp.jpg") if img else None
+                media = [p] if p else []
+            photo = media[0] if media else None
             if photo and str(photo).lower().endswith(".mp4"):
-                if video_drafts >= 1:  # не заваливаем админа клипами: один на запуск
+                if video_drafts >= 1:  # не заваливаем админа клипами: один пост с видео на запуск
                     continue
                 video_drafts += 1
-            # предупреждение и спойлер нужны только для картинок и видео, в текстовых постах их нет
-            graphic = bool(photo) and is_graphic(title, summary)
-            if graphic:
-                text = "⚠️ <b>Не для слабонервных</b>\n\n" + text
-            text = text[: (1024 if photo else 4096) - len(SIGNATURE)] + SIGNATURE
+            # пометка «Не для слабонервных» и спойлер только для картинок/видео и только при явной жести в тексте
+            graphic = bool(media) and is_graphic(title, summary)
+            limit = (1024 - len(WARN) if media else 4096) - len(SIGNATURE)
+            core = safe_cut(text, limit) + SIGNATURE
             if args.dry_run:
-                print(text, "\n[фото из новости]" if photo else "\n[только текст]", "\n---")
-            elif str(photo).lower().endswith((".mp4", ".mov")):
-                send_draft(text, photo, graphic)  # клипы только через подтверждение админа
+                print(compose_caption(core, graphic), f"\n[медиа: {len(media)}]" if media else "\n[только текст]", "\n---")
+            elif photo and str(photo).lower().endswith((".mp4", ".mov")):
+                send_draft(core, media, graphic)  # клипы только через подтверждение админа
             else:
-                send(text, photo, spoiler=graphic, hot=hot)
+                send(compose_caption(core, graphic), photo, spoiler=graphic, hot=hot)
                 if not hot:
                     seen = {s for s in seen if not s.startswith("__last_post__=")}
                     last_post = time.time()

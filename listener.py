@@ -278,7 +278,8 @@ def handle(cb):
     if cb["from"]["id"] != ADMIN:
         api("answerCallbackQuery", callback_query_id=cb["id"], text="Нет доступа")
         return
-    action, _, pid = cb["data"].partition(":")
+    parts = cb["data"].split(":")
+    action, pid = parts[0], (parts[1] if len(parts) > 1 else "")
     if action.startswith("sub_"):
         handle_suggestion(cb, action, pid)
         return
@@ -288,18 +289,68 @@ def handle(cb):
         api("answerCallbackQuery", callback_query_id=cb["id"], text="Уже обработано")
         return
     meta = json.loads(meta_file.read_text("utf-8"))
+    if "core" not in meta:  # черновики старого формата: одна подпись и один файл
+        meta = {"core": meta["caption"], "media": [meta["media"]], "graphic": bool(meta.get("spoiler")),
+                "selected": [0], "legacy": True}
+    n = len(meta["media"])
+    chat_id, message_id = msg["chat"]["id"], msg["message_id"]
+
+    def refresh(update_text):
+        """Перерисовать кнопки (и подпись, если поменялась пометка)."""
+        kb = json.dumps(nb.draft_keyboard(pid, n, set(meta["selected"]), meta["graphic"]))
+        caption = nb.compose_caption(meta["core"], meta["graphic"])
+        if update_text and n == 1:
+            api("editMessageCaption", chat_id=chat_id, message_id=message_id, caption=caption,
+                parse_mode="HTML", reply_markup=kb)
+        elif update_text:
+            api("editMessageText", chat_id=chat_id, message_id=message_id, parse_mode="HTML",
+                text=caption + f"\n\n🎞 Видео в посте: {n}. Выберите нужные и нажмите «Опубликовать».", reply_markup=kb)
+        else:
+            api("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id, reply_markup=kb)
+
+    if action in ("tg", "all", "none", "wm"):
+        if action == "tg":
+            i = int(parts[2])
+            sel = set(meta["selected"])
+            sel.symmetric_difference_update({i})
+            meta["selected"] = sorted(sel)
+        elif action == "all":
+            meta["selected"] = list(range(n))
+        elif action == "none":
+            meta["selected"] = []
+        else:  # wm: добавить или убрать пометку «Не для слабонервных»
+            meta["graphic"] = not meta["graphic"]
+        if not meta.get("legacy"):
+            meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        try:
+            refresh(update_text=(action == "wm"))
+        except Exception as e:
+            print("!", e)
+        api("answerCallbackQuery", callback_query_id=cb["id"],
+            text=("Пометка добавлена" if meta["graphic"] else "Пометка убрана") if action == "wm" else "")
+        return
+
     if action == "ok":
-        nb.send(meta["caption"], nb.PENDING / meta["media"], meta["spoiler"])
-        status = "✅ Опубликовано"
+        chosen = [nb.PENDING / meta["media"][i] for i in sorted(meta["selected"])]
+        if not chosen:
+            api("answerCallbackQuery", callback_query_id=cb["id"], text="Ничего не выбрано", show_alert=True)
+            return
+        caption = meta["core"] if meta.get("legacy") and not meta["graphic"] else nb.compose_caption(meta["core"], meta["graphic"])
+        if len(chosen) == 1:
+            nb.send(caption, chosen[0], meta["graphic"])
+        else:
+            nb.send_media_group(chosen, caption, meta["graphic"])
+        status = "✅ Опубликовано" + (f" ({len(chosen)} видео)" if len(chosen) > 1 else "")
     else:
         status = "❌ Пропущено"
-    meta_file.unlink()
-    (nb.PENDING / meta["media"]).unlink(missing_ok=True)
+    meta_file.unlink(missing_ok=True)
+    for name in meta["media"]:
+        (nb.PENDING / name).unlink(missing_ok=True)
     api("answerCallbackQuery", callback_query_id=cb["id"], text=status)
     api(
         "editMessageReplyMarkup",
-        chat_id=msg["chat"]["id"],
-        message_id=msg["message_id"],
+        chat_id=chat_id,
+        message_id=message_id,
         reply_markup=json.dumps({"inline_keyboard": [[{"text": status, "callback_data": "done"}]]}),
     )
 
