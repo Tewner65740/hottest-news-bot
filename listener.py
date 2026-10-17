@@ -332,11 +332,13 @@ def handle(cb):
 
     if action == "ok":
         chosen = [nb.PENDING / meta["media"][i] for i in sorted(meta["selected"])]
-        if not chosen:
+        if not chosen and n > 0:
             api("answerCallbackQuery", callback_query_id=cb["id"], text="Ничего не выбрано", show_alert=True)
             return
         caption = meta["core"] if meta.get("legacy") and not meta["graphic"] else nb.compose_caption(meta["core"], meta["graphic"])
-        if len(chosen) == 1:
+        if n == 0:  # текстовый пост (итоги дня)
+            nb.send(caption, None, hot=True)
+        elif len(chosen) == 1:
             nb.send(caption, chosen[0], meta["graphic"])
         else:
             nb.send_media_group(chosen, caption, meta["graphic"])

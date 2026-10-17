@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import feedparser
@@ -350,6 +351,30 @@ HOT_RE = re.compile(
 )
 MIN_GAP = 45 * 60  # обычные посты: примерно 1 в 45–60 минут, около 24 в сутки как у каналов-образцов
 
+# Лимит постов на конкретный день (по Москве): считается с момента запуска этой версии. Итоги дня сюда не входят:
+# 6 новостей + итоги дня = 7 постов. Остальные дни без лимита.
+DAILY_CAPS = {"2026-10-17": 6}
+CAP_GAP = 80 * 60  # в день с лимитом посты идут реже, чтобы хватило до конца суток
+MIN_BODY = 120  # в день с лимитом пропускаем новости без сути: только заголовок или одна короткая фраза
+MSK = timezone(timedelta(hours=3))
+
+
+def msk_today():
+    return datetime.now(timezone.utc).astimezone(MSK).strftime("%Y-%m-%d")
+
+
+def day_count(seen, day):
+    """Сколько постов уже вышло за день (служебная запись в seen.json)."""
+    return max((int(s.rsplit(":", 1)[1]) for s in seen if s.startswith(f"__cnt__={day}:")), default=0)
+
+
+def bump_day_count(seen, day):
+    n = day_count(seen, day) + 1
+    for s in [s for s in seen if s.startswith("__cnt__=")]:
+        seen.discard(s)
+    seen.add(f"__cnt__={day}:{n}")
+    return n
+
 
 FAST_CHANNELS = ("bbbreaking",)  # берём все новости оттуда сразу, там они выходят быстрее всех
 
@@ -464,8 +489,9 @@ def draft_keyboard(pid, n, selected, graphic):
     label = "✅ Опубликовать" + (f" ({len(selected)} из {n})" if n > 1 else "")
     rows.append([{"text": label, "callback_data": f"ok:{pid}"},
                  {"text": "❌ Пропустить", "callback_data": f"no:{pid}"}])
-    rows.append([{"text": "⚠️ Пометку убрать" if graphic else "⚠️ Добавить пометку «Не для слабонервных»",
-                  "callback_data": f"wm:{pid}"}])
+    if n > 0:  # у чисто текстовых черновиков (итоги дня) пометка не нужна
+        rows.append([{"text": "⚠️ Пометку убрать" if graphic else "⚠️ Добавить пометку «Не для слабонервных»",
+                      "callback_data": f"wm:{pid}"}])
     return {"inline_keyboard": rows}
 
 
@@ -489,7 +515,9 @@ def send_draft(core, media_paths, graphic):
     admin = os.environ["ADMIN_CHAT_ID"]
     kb = draft_keyboard(pid, n, selected, graphic)
     caption = compose_caption(core, graphic)
-    if n == 1:
+    if n == 0:  # только текст (итоги дня)
+        send(caption, None, chat_id=admin, reply_markup=kb)
+    elif n == 1:
         send(caption, PENDING / names[0], graphic, chat_id=admin, reply_markup=kb)
     else:
         send_media_group([PENDING / x for x in names], None, graphic, chat_id=admin)  # предпросмотр: все видео подряд
@@ -530,6 +558,7 @@ def main():
     ap.add_argument("--set-avatar", action="store_true", help="установить avatar.png как фото канала")
     ap.add_argument("--set-description", action="store_true", help="установить описание канала")
     ap.add_argument("--vk-preview", action="store_true", help="показать, какой пост ушёл бы во ВК (без публикации)")
+    ap.add_argument("--digest-preview", action="store_true", help="показать итоги дня (без отправки)")
     ap.add_argument("--limit", type=int, default=5, help="максимум постов за запуск")
     args = ap.parse_args()
 
@@ -538,6 +567,12 @@ def main():
         import vk_post
 
         vk_post.run_slot(set(), is_hot, dry_run=True, force=True)
+        return
+    if args.digest_preview:
+        import digest
+
+        digest.run(set(), is_hot, SIGNATURE, os.environ.get("TELEGRAM_CHANNEL", "@TheHottest_NewsEveryDay"),
+                   send_draft, dry_run=True, force=True)
         return
     if args.set_description:
         set_description()
@@ -573,11 +608,16 @@ def main():
     last_post = max((float(s.split("=", 1)[1]) for s in seen if s.startswith("__last_post__=")), default=0.0)
     posted = 0
     video_drafts = 0
+    today = msk_today()
+    cap = DAILY_CAPS.get(today)  # None: в этот день лимита нет
+    gap = CAP_GAP if cap else MIN_GAP
     for link, title, summary, img in fresh:
         if posted >= args.limit:
             break
+        if cap is not None and day_count(seen, today) >= cap and not args.dry_run:
+            break  # дневной лимит постов исчерпан
         hot = is_hot(title, summary) or is_fast(link)  # быстрые источники идут без паузы между постами
-        if not hot and time.time() - last_post < MIN_GAP and not args.dry_run:
+        if not hot and time.time() - last_post < gap and not args.dry_run:
             break  # дальше только обычные, ждём следующего слота
         try:
             if "t.me/" not in link and len(summary) < 200:
@@ -598,6 +638,7 @@ def main():
             text = f"<b>{html.escape(head.strip())}</b>"
             if speaker_line:  # кто сказал: отдельной строкой под заголовком, как «— Лукашенко»
                 text += f"\n— {html.escape(speaker_line)}"
+            paras = []
             if rest.strip():
                 # короткие абзацы по одному-два предложения, как в образцах
                 sents = re.split(r"(?<=[.!?])\s+", rest.strip())
@@ -614,7 +655,11 @@ def main():
                 p = download(img, BASE / "photo_tmp.jpg") if img else None
                 media = [p] if p else []
             photo = media[0] if media else None
-            if photo and str(photo).lower().endswith(".mp4"):
+            is_clip = bool(photo) and str(photo).lower().endswith((".mp4", ".mov"))
+            if cap and not is_clip and sum(len(p) for p in paras) < MIN_BODY:
+                seen.add(link)  # в день с лимитом: без реальной сути (одна фраза или заголовок) не публикуем
+                continue
+            if is_clip:
                 if video_drafts >= 1:  # не заваливаем админа клипами: один пост с видео на запуск
                     continue
                 video_drafts += 1
@@ -628,6 +673,8 @@ def main():
                 send_draft(core, media, graphic)  # клипы только через подтверждение админа
             else:
                 send(compose_caption(core, graphic), photo, spoiler=graphic, hot=hot)
+                if cap is not None:
+                    bump_day_count(seen, today)
                 if not hot:
                     seen = {s for s in seen if not s.startswith("__last_post__=")}
                     last_post = time.time()
@@ -638,6 +685,12 @@ def main():
             print(f"! {link}: {e}", file=sys.stderr)
 
     if not args.dry_run:
+        try:  # итоги дня: раз в сутки в 21:00 по Москве, на подтверждение админу
+            import digest
+
+            digest.run(seen, is_hot, SIGNATURE, os.environ.get("TELEGRAM_CHANNEL", "@TheHottest_NewsEveryDay"), send_draft)
+        except Exception as e:
+            print("! итоги дня:", e, file=sys.stderr)
         try:  # ВКонтакте: 3 лучших поста в сутки (если заданы VK_TOKEN и VK_GROUP_ID)
             import vk_post
 
